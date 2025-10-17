@@ -120,6 +120,35 @@ for (let y = 0; y < 600; y++) {
 
 理论上识别码需要唯一，至少在服务器返回信息前是唯一的。
 
+### 绘画速率测试 (opcode `0xF0`)
+
+- **客户端到服务器 (C2S)**
+  - **消息类型**: `0xF0`
+  - **数据格式**: `[0xF0, ID(4 bytes), ClientTimestamp(4 bytes), X(2 bytes), Y(2 bytes), R(1 byte), G(1 byte), B(1 byte)]`
+    - `ID`: 客户端生成的唯一标识符。
+    - `ClientTimestamp`: 客户端发送时的时间戳。
+    - `X, Y`: 绘画坐标。
+    - `R, G, B`: 颜色值。
+  - **描述**: 客户端发送绘画坐标和颜色，用于测试绘画延迟。
+
+- **服务器到客户端 (S2C)**
+  - **消息类型**: `0xF0`
+  - **数据格式**: `[0xF0, ID(4 bytes), ClientTimestamp(4 bytes), ServerReceiveTimestamp(4 bytes), X(2 bytes), Y(2 bytes), R(1 byte), G(1 byte), B(1 byte)]`
+    - `ID`: 客户端生成的唯一标识符。
+    - `ClientTimestamp`: 客户端发送时的时间戳。
+    - `ServerReceiveTimestamp`: 服务器接收到消息时的时间戳。
+    - `X, Y`: 绘画坐标。
+    - `R, G, B`: 颜色值。
+  - **描述**: 服务器将接收到的绘画数据以及服务器接收时间戳广播给所有客户端，用于测量绘画延迟。
+
+### 绘画速率显示 (opcode `0xFE`)
+
+- **服务器到客户端 (S2C)**
+  - **消息类型**: `0xFE`
+  - **数据格式**: `[0xFE, PaintRate(4 bytes)]`
+    - `PaintRate`: 服务器每秒处理的绘画像素数量。
+  - **描述**: 服务器每秒向所有客户端广播当前的绘画速率。
+
 ## API 限制
 
 服务端侧作出如下限制：

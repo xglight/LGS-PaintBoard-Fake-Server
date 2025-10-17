@@ -28,6 +28,7 @@ const { width: WIDTH, height: HEIGHT, channels: CHANNELS } = config.board;
 const BOARD_SIZE = WIDTH * HEIGHT * CHANNELS;
 const paintBoard = Buffer.alloc(BOARD_SIZE, 0xff); // 初始化为白色
 
+
 // 设置单个像素（RGB）
 function setPixel(x, y, r, g, b) {
     if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return false;
@@ -86,6 +87,18 @@ const clients = new Set();
 
 const WS_CFG = config.websocket;
 const TOKEN_CFG = config.token;
+
+let paintCount = 0;
+setInterval(() => {
+    logger.info(`🎨 Paint Rate: ${paintCount} pixels/sec`);
+    const buf = Buffer.alloc(5);
+    buf.writeUInt8(0xFE, 0); // 绘画速率消息类型
+    buf.writeUInt32LE(paintCount, 1);
+    for (const c of clients) {
+        if (c.readyState === c.OPEN) c.send(buf);
+    }
+    paintCount = 0;
+}, 1000);
 
 // WS 升级处理
 wsServer.on('upgrade', (req, socket, head) => {
@@ -152,6 +165,7 @@ function broadcastDraw(x, y, r, g, b) {
     for (const c of clients) {
         if (c.readyState === c.OPEN && !c._meta.writeonly) c.send(buf);
     }
+    paintCount++;
     logger.info('Broadcast draw: %s, %s, %s, %s, %s', x, y, r, g, b);
 }
 

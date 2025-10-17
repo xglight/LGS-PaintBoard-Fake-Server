@@ -29,6 +29,7 @@
     <h1>🎨 实时画板</h1>
     <canvas id="board" width="1000" height="600"></canvas>
     <div id="status">连接中...</div>
+    <div id="paintRate">着色速率: 0 pixels/sec</div>
 
     <script type="module">
         const config = {
@@ -40,6 +41,7 @@
         const canvas = document.getElementById("board");
         const ctx = canvas.getContext("2d");
         const statusEl = document.getElementById("status");
+        const paintRateEl = document.getElementById("paintRate");
         const WIDTH = config.board.width;
         const HEIGHT = config.board.height;
         let uid = 1;  // 测试 UID
@@ -98,6 +100,10 @@
                 } else if (type === 0xFC) {
                     // ping
                     ws.send(new Uint8Array([0xFB])); // pong
+                } else if (type === 0xFE) {
+                    // 绘画速率 S2C
+                    const rate = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+                    paintRateEl.textContent = `着色速率: ${rate} pixels/sec`;
                 }
             };
         }
