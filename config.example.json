@@ -1,0 +1,30 @@
+{
+    "api": {
+        "protocol": "http",
+        "host": "localhost",
+        "port": 3000
+    },
+    "websocket": {
+        "protocol": "ws",
+        "host": "localhost",
+        "port": 3001,
+        "maxReadWritePerIP": 3,
+        "maxReadOnlyPerIP": 50,
+        "maxWriteOnlyPerIP": 5,
+        "packetsPerSecond": 256,
+        "pingInterval": 30000,
+        "pingTimeout": 10000
+    },
+    "log": {
+        "logLevel": "debug"
+    },
+    "board": {
+        "height": 600,
+        "width": 1000,
+        "channels": 3
+    },
+    "token": {
+        "cooldownMs": 1,
+        "check": false
+    }
+}

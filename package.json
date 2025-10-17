@@ -1,0 +1,19 @@
+{
+  "name": "lgs-paintboard-fake-server",
+  "version": "1.0.0",
+  "description": "LGS-PaintBoard 的 Fake 服务器，用于测试脚本。",
+  "license": "MIT",
+  "author": "xglight",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "run": "node server.mjs"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "better-sqlite3": "^12.4.1",
+    "fastify": "^5.6.1",
+    "uuid": "^13.0.0",
+    "ws": "^8.18.3"
+  }
+}

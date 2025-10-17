@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>🎨 实时画板</title>
+    <style>
+        body {
+            background: #222;
+            color: #eee;
+            text-align: center;
+            font-family: monospace;
+        }
+
+        canvas {
+            border: 2px solid #555;
+            cursor: crosshair;
+            margin-top: 10px;
+        }
+
+        #status {
+            margin-top: 8px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🎨 实时画板</h1>
+    <canvas id="board" width="1000" height="600"></canvas>
+    <div id="status">连接中...</div>
+
+    <script type="module">
+        const config = {
+            api: { host: "10.0.3.113", port: 3000, protocol: "http" },
+            websocket: { host: "10.0.3.113", port: 3001, protocol: "ws" },
+            board: { width: 1000, height: 600 }
+        };
+
+        const canvas = document.getElementById("board");
+        const ctx = canvas.getContext("2d");
+        const statusEl = document.getElementById("status");
+        const WIDTH = config.board.width;
+        const HEIGHT = config.board.height;
+        let uid = 1;  // 测试 UID
+        let token = "";
+        let ws;
+        let nextId = 1;
+
+        // ========== 加载画板 ==========
+        async function loadBoard() {
+            const url = `${config.api.protocol}://${config.api.host}:${config.api.port}/api/paintboard/getboard`;
+            const res = await fetch(url);
+            const buf = await res.arrayBuffer();
+            const data = new Uint8Array(buf);
+            const imgData = ctx.createImageData(WIDTH, HEIGHT);
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    const i = (y * WIDTH + x) * 3;
+                    const j = (y * WIDTH + x) * 4;
+                    imgData.data[j] = data[i];
+                    imgData.data[j + 1] = data[i + 1];
+                    imgData.data[j + 2] = data[i + 2];
+                    imgData.data[j + 3] = 255;
+                }
+            }
+            ctx.putImageData(imgData, 0, 0);
+            console.log("Board loaded");
+        }
+
+        // ========== 连接 WebSocket ==========
+        function connectWS() {
+            const wsUrl = `${config.websocket.protocol}://${config.websocket.host}:${config.websocket.port}?readonly=1`;
+            ws = new WebSocket(wsUrl);
+            ws.binaryType = "arraybuffer";
+            ws.onopen = () => {
+                statusEl.textContent = "✅ WebSocket 已连接～";
+                console.log("WS connected");
+            };
+            ws.onclose = () => {
+                statusEl.textContent = "❌ 连接断开，3 秒后重连...";
+                setTimeout(connectWS, 3000);
+            };
+            ws.onmessage = (event) => {
+                const data = new Uint8Array(event.data);
+                const type = data[0];
+                if (type === 0xFA) {
+                    // 绘制广播包 S2C
+                    const x = data[1] | (data[2] << 8);
+                    const y = data[3] | (data[4] << 8);
+                    const r = data[5], g = data[6], b = data[7];
+                    ctx.fillStyle = `rgb(${r},${g},${b})`;
+                    ctx.fillRect(x, y, 1, 1);
+                } else if (type === 0xFF) {
+                    const id = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+                    const code = data[5];
+                    console.log("绘制结果:", id, code.toString(16));
+                } else if (type === 0xFC) {
+                    // ping
+                    ws.send(new Uint8Array([0xFB])); // pong
+                }
+            };
+        }
+        (async () => {
+            await loadBoard();
+            connectWS();
+        })();
+    </script>
+</body>
+
+</html>
