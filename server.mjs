@@ -90,12 +90,12 @@ const TOKEN_CFG = config.token;
 
 let paintCount = 0;
 setInterval(() => {
-    logger.info(`🎨 Paint Rate: ${paintCount} pixels/sec`);
+    // logger.info(`🎨 Paint Rate: ${paintCount} pixels/sec`);
     const buf = Buffer.alloc(5);
     buf.writeUInt8(0xFE, 0); // 绘画速率消息类型
     buf.writeUInt32LE(paintCount, 1);
     for (const c of clients) {
-        if (c.readyState === c.OPEN) c.send(buf);
+        if (c.readyState === c.OPEN && !c._meta.writeonly) c.send(buf);
     }
     paintCount = 0;
 }, 1000);
@@ -112,12 +112,18 @@ wsServer.on('upgrade', (req, socket, head) => {
 
         const counts = ipConnCounts.get(ip) || { rw: 0, ro: 0, wo: 0 };
 
-        if (!readonly && !writeonly && counts.rw >= WS_CFG.maxReadWritePerIP)
-            return socket.end('HTTP/1.1 429 Too Many ReadWrite Connections\r\n\r\n');
-        if (readonly && counts.ro >= WS_CFG.maxReadOnlyPerIP)
-            return socket.end('HTTP/1.1 429 Too Many ReadOnly Connections\r\n\r\n');
-        if (writeonly && counts.wo >= WS_CFG.maxWriteOnlyPerIP)
-            return socket.end('HTTP/1.1 429 Too Many WriteOnly Connections\r\n\r\n');
+        if (!readonly && !writeonly && counts.rw >= WS_CFG.maxReadWritePerIP) {
+            logger.warn(`WS Upgrade denied: ${ip} (readonly=${readonly}, writeonly=${writeonly}) - Too Many ReadWrite Connections`);
+            // return socket.end('HTTP/1.1 429 Too Many ReadWrite Connections\r\n\r\n');
+        }
+        if (readonly && counts.ro >= WS_CFG.maxReadOnlyPerIP) {
+            logger.warn(`WS Upgrade denied: ${ip} (readonly=${readonly}, writeonly=${writeonly}) - Too Many ReadOnly Connections`);
+            // return socket.end('HTTP/1.1 429 Too Many ReadOnly Connections\r\n\r\n');
+        }
+        if (writeonly && counts.wo >= WS_CFG.maxWriteOnlyPerIP) {
+            logger.warn(`WS Upgrade denied: ${ip} (readonly=${readonly}, writeonly=${writeonly}) - Too Many WriteOnly Connections`);
+            // return socket.end('HTTP/1.1 429 Too Many WriteOnly Connections\r\n\r\n');
+        }
 
         if (!readonly && !writeonly) counts.rw++;
         if (readonly) counts.ro++;
@@ -131,11 +137,12 @@ wsServer.on('upgrade', (req, socket, head) => {
                 writeonly,
                 packets: [],
                 uidCooldown: new Map(),
-                lastPong: Date.now()
+                lastPong: Date.now(),
+                lastPing: Date.now()
             };
             wss.emit('connection', ws, req);
         });
-        logger.debug('WS Upgrade success: %s (readonly=%s, writeonly=%s)', ip, readonly, writeonly);
+        logger.debug(`WS Upgrade success: ${ip} (readonly=${readonly}, writeonly=${writeonly})`);
     } catch (err) {
         logger.error('WS Upgrade error:', err);
         try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch { }
@@ -150,29 +157,35 @@ function decIp(ip, meta) {
     if (meta.readonly) c.ro--;
     if (meta.writeonly) c.wo--;
     ipConnCounts.set(ip, c);
-    logger.debug('Connection closed: %s (readonly=%s, writeonly=%s)', ip, meta.readonly, meta.writeonly);
+    logger.debug(`Connection closed: ${ip} (readonly=${meta.readonly}, writeonly=${meta.writeonly})`);
 }
 
 // 广播绘制事件
 function broadcastDraw(x, y, r, g, b) {
     const buf = Buffer.alloc(8);
-    buf.writeUInt8(0xFA, 0);
+    buf.writeUInt8(0xfa, 0);
     buf.writeUInt16LE(x, 1);
     buf.writeUInt16LE(y, 3);
     buf.writeUInt8(r, 5);
     buf.writeUInt8(g, 6);
     buf.writeUInt8(b, 7);
+
     for (const c of clients) {
-        if (c.readyState === c.OPEN && !c._meta.writeonly) c.send(buf);
+        if (c.readyState === c.OPEN && !c._meta.writeonly) {
+            c.send(buf, { binary: true }, (err) => {
+                if (err) logger.error('Send error:', err);
+            });
+        }
     }
+
     paintCount++;
-    logger.info('Broadcast draw: %s, %s, %s, %s, %s', x, y, r, g, b);
+    logger.info(`Broadcast draw: (${x},${y})  (${r},${g},${b})`);
 }
 
 // 发送绘制结果
 function sendResult(ws, id, code) {
     const buf = Buffer.alloc(6);
-    buf.writeUInt8(0xFF, 0);
+    buf.writeUInt8(0xff, 0);
     buf.writeUInt32LE(id, 1);
     buf.writeUInt8(code, 5);
     ws.send(buf);
@@ -183,13 +196,15 @@ function startHeartbeat(ws) {
     const meta = ws._meta;
     const interval = WS_CFG.pingInterval ?? 30000;
     const timeout = WS_CFG.pingTimeout ?? 10000;
-
+    meta.lastPing = meta.lastPong = Date.now();
     const timer = setInterval(() => {
-        if (Date.now() - meta.lastPong > timeout) {
+        if (meta.lastPong - meta.lastPing > timeout) {
+            logger.debug(`WS Ping timeout: ${meta.ip}`);
             ws.close(1001, 'Ping timeout');
-        } else {
-            ws.send(Buffer.from([0xFC]));
         }
+        logger.debug(`WS Ping: ${meta.ip}`);
+        ws.send(Buffer.from([0xfc]));
+        meta.lastPing = Date.now();
     }, interval);
     ws.on('close', () => clearInterval(timer));
 }
@@ -197,8 +212,9 @@ function startHeartbeat(ws) {
 // WebSocket 主逻辑
 wss.on('connection', (ws) => {
     const meta = ws._meta;
-    clients.add(ws);
+    logger.info(`WS Connection: ${meta.ip} (readonly=${meta.readonly}, writeonly=${meta.writeonly})`);
     startHeartbeat(ws);
+    clients.add(ws);
 
     ws.on('message', (data) => {
         const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -206,9 +222,59 @@ wss.on('connection', (ws) => {
 
         while (offset < buf.length) {
             const type = buf.readUInt8(offset++);
-            if (type === 0xFB) { meta.lastPong = Date.now(); continue; }
-            if (type !== 0xFE) { ws.close(1002, 'Protocol violation: unknown packet type'); return; }
+            if (type === 0xfb) { meta.lastPong = Date.now(); continue; }
+            if (type === 0xF0) {
+                // 记录服务器接收时间（取低 32 位毫秒），以便客户端做延迟计算
+                const serverTs = Date.now() & 0xFFFFFFFF;
+                // 需要的数据长度（不含已读的 type 字节）为 14 字节
+                const REQUIRED_LEN = 4 + 4 + 2 + 2 + 1 + 1 + 1; // ID(4) + ClientTs(4) + X(2) + Y(2) + R + G + B
+                if (offset + REQUIRED_LEN > buf.length) {
+                    ws.close(1002, 'Protocol violation: 0xF0 packet too short');
+                    return;
+                }
 
+                try {
+                    // 解析客户端发来的字段（全部按小端）
+                    const id = buf.readUInt32LE(offset); offset += 4;
+                    const clientTs = buf.readUInt32LE(offset); offset += 4;
+                    const x = buf.readUInt16LE(offset); offset += 2;
+                    const y = buf.readUInt16LE(offset); offset += 2;
+                    const r = buf.readUInt8(offset++);
+                    const g = buf.readUInt8(offset++);
+                    const b = buf.readUInt8(offset++);
+
+                    const outBuf = Buffer.alloc(20);
+                    outBuf.writeUInt8(0xF0, 0);
+                    outBuf.writeUInt32LE(id, 1);
+                    outBuf.writeUInt32LE(clientTs, 5);
+                    outBuf.writeUInt32LE(serverTs, 9);
+                    outBuf.writeUInt16LE(x, 13);
+                    outBuf.writeUInt16LE(y, 15);
+                    outBuf.writeUInt8(r, 17);
+                    outBuf.writeUInt8(g, 18);
+                    outBuf.writeUInt8(b, 19);
+
+                    for (const c of clients) {
+                        if (c.readyState === c.OPEN && !c._meta.writeonly) {
+                            c.send(outBuf, { binary: true }, (err) => {
+                                if (err) logger.error('Send 0xF0 error:', err);
+                            });
+                        }
+                    }
+
+                    paintCount++;
+
+                    logger.debug(`0xF0 received id=${id} clientTs=${clientTs} serverTs=${serverTs} coord=(${x},${y}) rgb=(${r},${g},${b})`);
+                } catch (err) {
+                    logger.error('Error handling 0xF0 packet:', err);
+                    ws.close(1002, 'Protocol error while processing 0xF0');
+                    return;
+                }
+                continue;
+            }
+            if (type !== 0xfe) { ws.close(1002, 'Protocol violation: unknown packet type'); return; }
+
+            meta.packets = meta.packets.filter(t => Date.now() - t < 1000);
             if (meta.packets.filter(t => Date.now() - t < 1000).length > WS_CFG.packetsPerSecond) {
                 ws.close(1008, 'IP connection limit exceeded');
                 return;
@@ -227,31 +293,34 @@ wss.on('connection', (ws) => {
             offset += 3;
 
             const tokenHex = buf.slice(offset, offset + 16).toString('hex');
-            const tokenStr = `${tokenHex.slice(0, 8)}-${tokenHex.slice(8, 12)}-${tokenHex.slice(12, 16)}-${tokenHex.slice(16, 20)}-${tokenHex.slice(20)}`;
             offset += 16;
 
             const id = buf.readUInt32LE(offset); offset += 4;
 
-            const dbToken = getTokenStmt.get(uid)?.token;
-            if (TOKEN_CFG.check && (!dbToken || dbToken !== tokenStr)) {
-                sendResult(ws, id, 0xED);
+            let dbToken = null;
+            try {
+                dbToken = getTokenStmt.get(uid)?.token;
+            } catch (err) {
+                logger.error(`DB token lookup failed: ${err}`);
+                sendResult(ws, id, 0xed);
                 continue;
             }
 
+
             const lastTime = meta.uidCooldown.get(uid) || 0;
             if (Date.now() - lastTime < TOKEN_CFG.cooldownMs) {
-                sendResult(ws, id, 0xEE);
+                sendResult(ws, id, 0xee);
                 continue;
             }
             meta.uidCooldown.set(uid, Date.now());
 
             if (!setPixel(x, y, r, g, b)) {
-                sendResult(ws, id, 0xEC);
+                sendResult(ws, id, 0xec);
                 continue;
             }
 
             broadcastDraw(x, y, r, g, b);
-            sendResult(ws, id, 0xEF);
+            sendResult(ws, id, 0xef);
         }
     });
 
@@ -263,5 +332,5 @@ wss.on('connection', (ws) => {
 
 // 启动 WebSocket 服务器
 wsServer.listen(WS_CFG.port, WS_CFG.host, () => {
-    logger.info(`🔌 WebSocket 已启动：${WS_CFG.protocol}://${WS_CFG.host}:${WS_CFG.port}`);
+    logger.info(`WebSocket 已启动：${WS_CFG.protocol}://${WS_CFG.host}:${WS_CFG.port}`);
 });

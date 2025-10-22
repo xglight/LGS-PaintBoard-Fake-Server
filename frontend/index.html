@@ -1,116 +1,350 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 
 <head>
-    <meta charset="UTF-8" />
-    <title>🎨 实时画板</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LGS Paintboard 前端示例</title>
     <style>
         body {
-            background: #222;
-            color: #eee;
-            text-align: center;
-            font-family: monospace;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+            margin: 12px;
+            background: #f8f9fb;
+            color: #111;
+        }
+
+        header {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        #controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .canvas-wrap {
+            position: relative;
+            display: inline-block;
+            border: 1px solid #ccc;
+            background: #fff;
         }
 
         canvas {
-            border: 2px solid #555;
+            display: block;
+            image-rendering: pixelated;
             cursor: crosshair;
-            margin-top: 10px;
         }
 
-        #status {
-            margin-top: 8px;
-            font-size: 14px;
+        .panel {
+            background: #fff;
+            border: 1px solid #e6e9ee;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 6px rgba(20, 20, 50, 0.04);
+        }
+
+        .small {
+            font-size: 13px;
+            color: #666;
+        }
+
+        #log {
+            white-space: pre-wrap;
+            max-height: 240px;
+            overflow: auto;
+            font-family: monospace;
+            font-size: 12px;
+            background: #0f1724;
+            color: #e6eef8;
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        #coords {
+            position: absolute;
+            left: 8px;
+            top: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        label {
+            font-size: 13px;
+        }
+
+        input[type="number"] {
+            width: 90px;
+        }
+
+        input[type="text"] {
+            width: 260px;
+        }
+
+        button {
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid #cbd5e1;
+            background: #fff;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: #0ea5a4;
+            color: #fff;
+            border-color: transparent;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #444;
         }
     </style>
 </head>
 
 <body>
-    <h1>🎨 实时画板</h1>
-    <canvas id="board" width="1000" height="600"></canvas>
-    <div id="status">连接中...</div>
-    <div id="paintRate">着色速率: 0 pixels/sec</div>
+    <header>
+        <h1 class="panel" style="padding:10px; margin:0;">LGS Paintboard 前端示例</h1>
+        <div class="small">滚轮缩放，鼠标实时显示画布坐标，点击单像素发送</div>
+    </header>
 
-    <script type="module">
-        const config = {
-            api: { host: "10.0.3.113", port: 3000, protocol: "http" },
-            websocket: { host: "10.0.3.113", port: 3001, protocol: "ws" },
-            board: { width: 1000, height: 600 }
-        };
+    <div id="controls" class="panel">
+        <div>
+            <label>API 根地址：</label>
+            <input id="apiRoot" type="text" value="https://paintboard.luogu.me" />
+        </div>
+        <div>
+            <label>WebSocket 地址：</label>
+            <input id="wsUrl" type="text" value="wss://paintboard.luogu.me/api/paintboard/ws" style="width:320px;" />
+        </div>
+        <div>
+            <button id="btnFetchBoard">拉取画板</button>
+        </div>
+        <div>
+            <button id="btnConnect" class="btn-primary">连接 WebSocket</button>
+            <button id="btnDisconnect">断开 WS</button>
+        </div>
+        <div>
+            <button id="btnClearLocal">清屏（仅 UI）</button>
+        </div>
+        <div>
+            <label>实时速率：</label>
+            <label id="paintRace" style="font-size:13px;">0 pixel/s</label>
+        </div>
+        <div class="hint">缩放：鼠标滚轮（以鼠标为中心缩放）· 平移：按住鼠标中键并拖动</div>
+    </div>
 
-        const canvas = document.getElementById("board");
-        const ctx = canvas.getContext("2d");
-        const statusEl = document.getElementById("status");
-        const paintRateEl = document.getElementById("paintRate");
-        const WIDTH = config.board.width;
-        const HEIGHT = config.board.height;
-        let uid = 1;  // 测试 UID
-        let token = "";
-        let ws;
-        let nextId = 1;
+    <div style="display:flex; gap:12px;">
+        <div class="panel">
+            <div class="canvas-wrap">
+                <div id="coords">x: -, y: -</div>
+                <canvas id="board" width="1000" height="600"></canvas>
+            </div>
+            <div class="small">画布 1000×600，滚轮缩放并显示坐标</div>
+        </div>
 
-        // ========== 加载画板 ==========
-        async function loadBoard() {
-            const url = `${config.api.protocol}://${config.api.host}:${config.api.port}/api/paintboard/getboard`;
-            const res = await fetch(url);
-            const buf = await res.arrayBuffer();
-            const data = new Uint8Array(buf);
-            const imgData = ctx.createImageData(WIDTH, HEIGHT);
-            for (let y = 0; y < HEIGHT; y++) {
-                for (let x = 0; x < WIDTH; x++) {
-                    const i = (y * WIDTH + x) * 3;
-                    const j = (y * WIDTH + x) * 4;
-                    imgData.data[j] = data[i];
-                    imgData.data[j + 1] = data[i + 1];
-                    imgData.data[j + 2] = data[i + 2];
-                    imgData.data[j + 3] = 255;
-                }
-            }
-            ctx.putImageData(imgData, 0, 0);
-            console.log("Board loaded");
+        <div style="width:420px;">
+            <div class="panel" style="margin-bottom:8px;">
+                <div class="small">操作日志</div>
+                <div id="log"></div>
+            </div>
+            <div class="panel">
+                <div class="small">提示：</div>
+                <ul class="small">
+                    <li>填写或修改 WebSocket 地址后点击“连接 WebSocket”</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('board');
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+
+        // offscreen canvas 用于缩放与绘制
+        const off = document.createElement('canvas');
+        off.width = W; off.height = H;
+        const offCtx = off.getContext('2d');
+
+        let imageData = offCtx.createImageData(W, H);
+        for (let i = 0; i < imageData.data.length; i += 4) imageData.data[i + 3] = 255;
+        offCtx.putImageData(imageData, 0, 0);
+
+        const coordsEl = document.getElementById('coords');
+        const logEl = document.getElementById('log');
+        function log(...args) {
+            const t = new Date().toLocaleTimeString();
+            const line = `[${t}] ` + args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+            logEl.textContent = line + '\n' + logEl.textContent;
         }
 
-        // ========== 连接 WebSocket ==========
+        const apiRootEl = document.getElementById('apiRoot');
+        const btnFetchBoard = document.getElementById('btnFetchBoard');
+        const btnConnect = document.getElementById('btnConnect');
+        const btnDisconnect = document.getElementById('btnDisconnect');
+        const colorPicker = document.getElementById('colorPicker');
+        const btnClearLocal = document.getElementById('btnClearLocal');
+        const wsUrlEl = document.getElementById('wsUrl');
+        const paintRaceEl = document.getElementById('paintRace');
+
+        let ws = null;
+        let chunks = [];
+        let totalSize = 0;
+        let paintId = 0;
+
+        let scale = 1.0; // 缩放比例
+        let offsetX = 0; // 画布在容器内的像素偏移（canvas 画布坐标系）
+        let offsetY = 0;
+
+        // 初始将图像居中显示（可选）
+        function centerImage() {
+            // 中心显示
+            offsetX = (canvas.width - W * scale) / 2;
+            offsetY = (canvas.height - H * scale) / 2;
+        }
+        centerImage();
+
+        function render() {
+            // 清空并绘制 offscreen（缩放 + 平移）
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // drawImage 支持缩放
+            ctx.drawImage(off, offsetX, offsetY, W * scale, H * scale);
+        }
+
+        function appendData(buf) { chunks.push(buf); totalSize += buf.length; }
+        function getMergedData() { if (totalSize === 0) return null; const result = new Uint8Array(totalSize); let offset = 0; for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; } totalSize = 0; chunks = []; return result; }
+        function uintToUint8Array(uint, bytes) { const array = new Uint8Array(bytes); for (let i = 0; i < bytes; i++) { array[i] = uint & 0xff; uint = uint >> 8; } return array; }
+        function uuidToBytes(uuid) { const s = uuid.replace(/-/g, ''); if (s.length !== 32) throw new Error('非法 UUID 长度'); const out = new Uint8Array(16); for (let i = 0; i < 16; i++) out[i] = parseInt(s.substr(i * 2, 2), 16); return out; }
+
+        function drawPixelOnImageData(x, y, r, g, b) {
+            if (x < 0 || x >= W || y < 0 || y >= H) return;
+            const idx = (y * W + x) * 4;
+            imageData.data[idx] = r; imageData.data[idx + 1] = g; imageData.data[idx + 2] = b; imageData.data[idx + 3] = 255;
+        }
+        function refreshOffscreen() { offCtx.putImageData(imageData, 0, 0); }
+
+        async function fetchBoard() {
+            const root = apiRootEl.value.replace(/\/+$/, '');
+            const url = root + '/api/paintboard/getboard';
+            log('开始拉取画板...', url);
+            try {
+                const res = await fetch(url, { method: 'GET' });
+                if (!res.ok) { log('拉取失败，HTTP', res.status); return; }
+                const buffer = await res.arrayBuffer();
+                const bytes = new Uint8Array(buffer);
+                const w = 1000, h = 600;
+                if (bytes.length < w * h * 3) { log('返回长度异常：', bytes.length); return; }
+                for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+                    const p = y * w * 3 + x * 3;
+                    drawPixelOnImageData(x, y, bytes[p], bytes[p + 1], bytes[p + 2]);
+                }
+                refreshOffscreen();
+                render();
+                log('画板渲染完成');
+            } catch (err) { log('fetchBoard 错误：', err.message); }
+        }
+
         function connectWS() {
-            const wsUrl = `${config.websocket.protocol}://${config.websocket.host}:${config.websocket.port}?readonly=1`;
-            ws = new WebSocket(wsUrl);
-            ws.binaryType = "arraybuffer";
-            ws.onopen = () => {
-                statusEl.textContent = "✅ WebSocket 已连接～";
-                console.log("WS connected");
-            };
-            ws.onclose = () => {
-                statusEl.textContent = "❌ 连接断开，3 秒后重连...";
-                setTimeout(connectWS, 3000);
-            };
-            ws.onmessage = (event) => {
-                const data = new Uint8Array(event.data);
-                const type = data[0];
-                if (type === 0xFA) {
-                    // 绘制广播包 S2C
-                    const x = data[1] | (data[2] << 8);
-                    const y = data[3] | (data[4] << 8);
-                    const r = data[5], g = data[6], b = data[7];
-                    ctx.fillStyle = `rgb(${r},${g},${b})`;
-                    ctx.fillRect(x, y, 1, 1);
-                } else if (type === 0xFF) {
-                    const id = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
-                    const code = data[5];
-                    console.log("绘制结果:", id, code.toString(16));
-                } else if (type === 0xFC) {
-                    // ping
-                    ws.send(new Uint8Array([0xFB])); // pong
-                } else if (type === 0xFE) {
-                    // 绘画速率 S2C
-                    const rate = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
-                    paintRateEl.textContent = `着色速率: ${rate} pixels/sec`;
+            const wsUrl = wsUrlEl.value.trim() + '?readonly=1'; if (!wsUrl) { log('请填写 WebSocket 地址'); return; }
+            if (ws) { log('WS 已存在，先断开再重连'); ws.close(); }
+            try { ws = new WebSocket(wsUrl); } catch (e) { log('WS 地址无效或构造失败：', e.message); return; }
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => { log('WebSocket 已打开'); };
+            ws.onerror = (e) => { log('WebSocket 错误', e && e.message ? e.message : e); };
+            ws.onclose = (ev) => { log('WebSocket 已关闭', ev.code, ev.reason || ''); ws = null; };
+            ws.onmessage = (ev) => {
+                const buffer = ev.data; const view = new DataView(buffer); let offset = 0;
+                while (offset < view.byteLength) {
+                    const type = view.getUint8(offset); offset += 1;
+                    switch (type) {
+                        case 0xfa: {
+                            const x = view.getUint16(offset, true);
+                            const y = view.getUint16(offset + 2, true);
+                            const r = view.getUint8(offset + 4);
+                            const g = view.getUint8(offset + 5);
+                            const b = view.getUint8(offset + 6);
+                            offset += 7;
+                            drawPixelOnImageData(x, y, r, g, b);
+                            break;
+                        }
+                        case 0xfc: { try { ws.send(new Uint8Array([0xfb])); } catch (e) { log('发送心跳回应失败：', e.message); } break; }
+                        case 0xff: { const id = view.getUint32(offset, true); const code = view.getUint8(offset + 4); offset += 5; log('绘画结果 id=' + id + ' code=0x' + code.toString(16)); break; }
+                        case 0xF0: { try { const id = view.getUint32(offset, true); const clientTs = view.getUint32(offset + 4, true); const serverTs = view.getUint32(offset + 8, true); const x = view.getUint16(offset + 12, true); const y = view.getUint16(offset + 14, true); const r = view.getUint8(offset + 16); const g = view.getUint8(offset + 17); const b = view.getUint8(offset + 18); offset += 19; log('速率测试回显 id=' + id + ' clientTs=' + clientTs + ' serverTs=' + serverTs); } catch (e) { log('解析 0xF0 失败', e.message); offset = view.byteLength; } break; }
+                        case 0xFE: {
+                            const rate = view.getUint32(offset, true); offset += 4;
+                            paintRaceEl.textContent = rate + ' pixel/s';
+                            break;
+                        }
+                        default: log('收到未知消息类型：0x' + type.toString(16)); offset = view.byteLength;
+                    }
                 }
+                refreshOffscreen(); render();
             };
         }
-        (async () => {
-            await loadBoard();
-            connectWS();
-        })();
+
+        function paintPacket(uid, tokenUuid, r, g, b, x, y) { const id = (paintId++) >>> 0; const arr = []; arr.push(0xFE); arr.push(...uintToUint8Array(x, 2)); arr.push(...uintToUint8Array(y, 2)); arr.push(r, g, b); arr.push(...uintToUint8Array(uid, 3)); try { const tokenBytes = uuidToBytes(tokenUuid); for (let bbt of tokenBytes) arr.push(bbt); } catch (e) { log('Token UUID 无效：', e.message); return null; } arr.push(...uintToUint8Array(id, 4)); return new Uint8Array(arr); }
+
+        // 实时显示坐标
+        canvas.addEventListener('mousemove', (ev) => {
+            const rect = canvas.getBoundingClientRect();
+            const cx = ev.clientX - rect.left; const cy = ev.clientY - rect.top;
+            const x = Math.floor((cx - offsetX) / scale);
+            const y = Math.floor((cy - offsetY) / scale);
+            coordsEl.textContent = `x: ${x}, y: ${y}`;
+        });
+        canvas.addEventListener('mouseleave', () => { coordsEl.textContent = 'x: -, y: -'; });
+
+        // 缩放行为（以鼠标位置为锚点）
+        canvas.addEventListener('wheel', (ev) => {
+            ev.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mx = ev.clientX - rect.left; const my = ev.clientY - rect.top;
+            const oldScale = scale;
+            const delta = ev.deltaY < 0 ? 1.12 : 1 / 1.12; // 每格约 12% 缩放
+            let newScale = scale * delta;
+            newScale = Math.max(0.2, Math.min(10, newScale));
+            // world coords under mouse
+            const worldX = (mx - offsetX) / oldScale;
+            const worldY = (my - offsetY) / oldScale;
+            // adjust offset so that worldX,worldY remains under mouse
+            offsetX = mx - worldX * newScale;
+            offsetY = my - worldY * newScale;
+            scale = newScale;
+            render();
+        }, { passive: false });
+
+        // 中键平移（按住中键并拖动）
+        let panning = false; let panStart = null;
+        canvas.addEventListener('mousedown', (ev) => {
+            if (ev.button === 1) { panning = true; panStart = { x: ev.clientX, y: ev.clientY, offsetX, offsetY }; ev.preventDefault(); }
+        });
+        window.addEventListener('mousemove', (ev) => {
+            if (!panning) return;
+            const dx = ev.clientX - panStart.x; const dy = ev.clientY - panStart.y;
+            offsetX = panStart.offsetX + dx; offsetY = panStart.offsetY + dy; render();
+        });
+        window.addEventListener('mouseup', (ev) => { if (ev.button === 1) { panning = false; panStart = null; } });
+
+        btnFetchBoard.addEventListener('click', fetchBoard);
+        btnConnect.addEventListener('click', () => { if (ws) { log('WS 已连接'); return; } connectWS(); });
+        btnDisconnect.addEventListener('click', () => { if (ws) ws.close(); else log('WS 未连接'); });
+        btnClearLocal.addEventListener('click', () => { imageData = offCtx.createImageData(W, H); for (let i = 0; i < imageData.data.length; i += 4) imageData.data[i + 3] = 255; refreshOffscreen(); render(); log('本地画布已清空（仅 UI）'); });
+
+        window.addEventListener('resize', () => { render(); });
+
+        window.addEventListener('load', () => { refreshOffscreen(); render(); log('就绪'); });
     </script>
 </body>
 
